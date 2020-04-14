@@ -98,8 +98,8 @@ def epoch(model, opt, data_loader, pbar_stats=False):
 
         so_far += X.shape[0]
 
-        # Compute weird error
-        total_metric += ch.sum(((yp * y) > 0).float()).cpu()
+        # Compute hinge loss and metric
+        total_metric += ch.mean(((yp * y) > 0).float()).cpu() * X.shape[0]
         total_loss += loss.cpu().item() * X.shape[0]
 
         if pbar_stats:
@@ -155,4 +155,4 @@ def get_data_loaders(model):
 if __name__ == "__main__":
     model = get_model()
     data_loaders = get_data_loaders(model)
-    train_model(model, data_loaders, epochs=500, save_every=50)
+    train_model(model, data_loaders, epochs=400, save_every=50)
