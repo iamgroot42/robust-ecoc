@@ -115,8 +115,7 @@ class Model_Tanh_Ensemble(nn.Module):
                     nn.ELU(),
                     nn.Linear(8, 4),
                     nn.ELU(),
-                    nn.Linear(4, 2),
-                    nn.ELU()))
+                    nn.Linear(4, 2)))
 
                 dense2.append(nn.Linear(2, 1))
 
