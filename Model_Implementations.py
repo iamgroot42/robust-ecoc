@@ -6,16 +6,15 @@ import kornia
 
 
 class ClassBlender(nn.Module):
-    def __init__(self,  attenuation, device):
+    def __init__(self,  attenuation):
         super(ClassBlender, self).__init__()
         self.attenuation = attenuation
-        self.device = device
 
     def forward(self, x):
         if self.training:
             x_permuted = x[ch.randperm(x.shape[0])]
-            angles = (180 * ( 2 * ch.rand(x.shape[0], device=self.device) - 1)) * np.pi / 180
-            shifts = 4 * (2 * ch.rand(x.shape[0], 2, device=self.device) -1)
+            angles = ((180 * ( 2 * ch.rand(x.shape[0]) - 1)) * np.pi / 180).to(x.get_device())
+            shifts = (4 * (2 * ch.rand(x.shape[0], 2) -1)).to(x.get_device())
             inputs_permuted_translated = kornia.translate(x_permuted, shifts)
             x_adjusted = kornia.rotate(inputs_permuted_translated, angles)
             x_adjusted = ch.clamp(x_adjusted, 0, 1)
@@ -24,31 +23,29 @@ class ClassBlender(nn.Module):
         return x
 
 class DataAugmenter(nn.Module):
-    def __init__(self, device):
+    def __init__(self):
         super(DataAugmenter, self).__init__()
-        self.device = device
 
     def forward(self, x):
         if self.training:
-            angles = (15 * (2 * ch.rand(x.shape[0], device=self.device) - 1)) * np.pi / 180
-            shifts = 4 * (2 * ch.rand(x.shape[0], 2, device=self.device) - 1)
+            angles = ((15 * (2 * ch.rand(x.shape[0]) - 1)) * np.pi / 180).to(x.get_device())
+            shifts = (4 * (2 * ch.rand(x.shape[0], 2) - 1)).to(x.get_device())
             inputs_shifted = kornia.translate(x, shifts)
             inputs_shifted_rotated = kornia.rotate(inputs_shifted, angles)
-            condition = ch.rand([x.shape[0], 1, 1, 1], device=self.device) < 0.5
+            condition = (ch.rand([x.shape[0], 1, 1, 1]) < 0.5).to(x.get_device())
             inputs_shifted_rotated_flipped = condition * kornia.hflip(inputs_shifted_rotated) + (~condition) * inputs_shifted_rotated          
             return inputs_shifted_rotated_flipped 
         return x
 
 
 class Model_Tanh_Ensemble(nn.Module):    
-    def __init__(self, M, device, noise_stddev=0.032, blend_factor=0.032, num_chunks=4):
+    def __init__(self, M, noise_stddev=0.032, blend_factor=0.032, num_chunks=4):
         super(Model_Tanh_Ensemble, self).__init__()
         self.num_chunks = num_chunks
         self.M =  M
         self.noise_stddev = noise_stddev
         self.blend_factor = blend_factor
         self.n = self.M.shape[1] // self.num_chunks
-        self.device = device
 
         self.conlayer1, self.conlayer2, self.conlayer3 = nn.ModuleList(), nn.ModuleList(), nn.ModuleList()
         self.conlayer4, self.conlayer5 = nn.ModuleList(), nn.ModuleList()
@@ -138,14 +135,14 @@ class Model_Tanh_Ensemble(nn.Module):
             x_gs = x_gs.unsqueeze(1)
            
             if self.training:
-                x    += ch.randn(x.size(), device=self.device) * self.noise_stddev
-                x_gs += ch.randn(x_gs.size(), device=self.device) * self.noise_stddev
+                x    += ch.randn(x.size()).to(x.get_device()) * self.noise_stddev
+                x_gs += ch.randn(x_gs.size()).to(x.get_device()) * self.noise_stddev
 
-                x    = DataAugmenter(self.device)(x)
-                x_gs = DataAugmenter(self.device)(x_gs)
+                x    = DataAugmenter()(x)
+                x_gs = DataAugmenter()(x_gs)
 
-                x    = ClassBlender(self.blend_factor, self.device)(x)  
-                x_gs = ClassBlender(self.blend_factor, self.device)(x_gs)  
+                x    = ClassBlender(self.blend_factor)(x)  
+                x_gs = ClassBlender(self.blend_factor)(x_gs)  
 
             x    = x.clamp(0, 1)
             x_gs = x_gs.clamp(0, 1)
@@ -182,15 +179,20 @@ class Model_Tanh_Ensemble(nn.Module):
             else:
                 outputs += out
 
-        return ch.stack(outputs)
+        # Permute to make sure batch-size is in first dimension
+        # Ensures compatibility with DataParallel()
+        return ch.stack(outputs).permute(1, 0, 2)
 
 def predict(model, x):
-    outputs = model(x)        
-    for idx, o in enumerate(outputs):
-        outputs[idx] = ch.tanh(o)
-
-    x = ch.cat(outputs, dim=-1)
-    x = ch.mm(x, ch.t(model.M))
-    logits = ch.log(relu(x) + 1e-6)
-        
-    return logits
+    with ch.no_grad():
+        outputs = model(x)
+        # Reshuffle outputs back to actual shape
+        outputs = outputs.permute(1, 0, 2)
+        # Run activation function on activations
+        outputs = ch.tanh(outputs)
+        outputs = [o for o in outputs]
+        outputs = ch.cat(outputs, dim=-1)
+        outputs = ch.mm(outputs, ch.t(model.module.M))
+        # Log-ReLU
+        logits = ch.log(relu(outputs) + 1e-6)
+        return logits

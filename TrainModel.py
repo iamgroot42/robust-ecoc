@@ -17,10 +17,6 @@ from torch.nn.functional import relu
 #   note that any random shuffle of a Hadmard matrix's rows or columns is still orthogonal
 
 
-# Define device for all operations
-device = ch.device('cuda:0')
-
-
 class CustomCIFAR10(Dataset):
     def __init__(self, X, Y):
         self.X = X
@@ -63,10 +59,10 @@ def get_model(code_length = 32):
     M = M[0:num_codes, idx[0:code_length]]
 
     # Convert to Tensor
-    M = ch.from_numpy(M).to(device)
+    M = ch.from_numpy(M).cuda()
 
-    model = Model_Tanh_Ensemble(M=M, device=device)
-    model.to(device)
+    model = Model_Tanh_Ensemble(M=M)
+    model = ch.nn.DataParallel(model).cuda()
     return model
 
 # Map categorical class labels (numbers) to encoded (e.g., one hot or ECOC) vectors
@@ -85,10 +81,12 @@ def epoch(model, opt, data_loader, pbar_stats=False):
     if pbar_stats:
         iterator = tqdm(iterator)
     for X, y in iterator:
-        X, y = X.to(device), y.to(device)
+        X, y = X.cuda(), y.cuda()
         y = y.permute(1, 0, 2)
         yp = model(X)
-        loss = ch.sum(ch.stack([ch.mean(relu(1.0 - y[i] * yp[i])) for i in np.arange(model.num_chunks)]))
+        # Permute yp again (permuted in forward() as well )to match dimensions with t
+        yp = yp.permute(1, 0, 2)
+        loss = ch.sum(ch.stack([ch.mean(relu(1.0 - y[i] * yp[i])) for i in np.arange(model.module.num_chunks)]))
         
         # Training mode
         if opt is not None:
@@ -109,7 +107,11 @@ def epoch(model, opt, data_loader, pbar_stats=False):
     return total_metric / len(data_loader.dataset), total_loss / len(data_loader.dataset)
 
 
-def train_model(model, loaders, epochs, save_every):
+def train_model(model, loaders, epochs, save_every, parallel=True):
+    # Save M matric
+    ch.save(model.module.M, 'models/M.pt')
+    print("M-matrix saved!")
+
     opt = ch.optim.Adam(model.parameters(), lr=2e-4, eps=1e-7)
     train_loader, val_loader = loaders
     for e in range(epochs):
@@ -130,15 +132,15 @@ def train_model(model, loaders, epochs, save_every):
 
 def get_data_loaders(model):
     (X_train, Y_train), (X_test, Y_test) = get_all_cifar10_data()
-    Y_train = encodeData(Y_train, model.M)
-    Y_test  = encodeData(Y_test,  model.M)
+    Y_train = encodeData(Y_train, model.module.M)
+    Y_test  = encodeData(Y_test,  model.module.M)
 
     Y_train_list= []
     Y_test_list = []
 
     start = 0
-    for k in np.arange(model.num_chunks):
-        end = start + model.M.shape[1] // model.num_chunks
+    for k in np.arange(model.module.num_chunks):
+        end = start + model.module.M.shape[1] // model.module.num_chunks
         Y_train_list += [Y_train[:,start:end]]
         Y_test_list += [Y_test[:,start:end]]
         start=end
@@ -146,7 +148,7 @@ def get_data_loaders(model):
     train_dataset = CustomCIFAR10(X_train, Y_train_list)
     val_dataset   = CustomCIFAR10(X_test, Y_test_list)
 
-    train_loader = ch.utils.data.DataLoader(train_dataset, batch_size=180, shuffle=True,  num_workers=4)
+    train_loader = ch.utils.data.DataLoader(train_dataset, batch_size=200, shuffle=True,  num_workers=4)
     val_loader   = ch.utils.data.DataLoader(val_dataset,   batch_size=100, shuffle=False, num_workers=4)
 
     return (train_loader, val_loader)
@@ -155,4 +157,4 @@ def get_data_loaders(model):
 if __name__ == "__main__":
     model = get_model()
     data_loaders = get_data_loaders(model)
-    train_model(model, data_loaders, epochs=400, save_every=50)
+    train_model(model, data_loaders, epochs=400, save_every=25)
