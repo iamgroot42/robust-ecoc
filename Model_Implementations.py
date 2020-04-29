@@ -13,7 +13,7 @@ class ClassBlender(nn.Module):
     def forward(self, x):
         if self.training:
             x_permuted = x[ch.randperm(x.shape[0])]
-            angles = ((180 * ( 2 * ch.rand(x.shape[0]) - 1)) * np.pi / 180).to(x.get_device())
+            angles = ((180 * ( 2 * ch.rand(x.shape[0]) - 1))).to(x.get_device())
             shifts = (4 * (2 * ch.rand(x.shape[0], 2) -1)).to(x.get_device())
             inputs_permuted_translated = kornia.translate(x_permuted, shifts)
             x_adjusted = kornia.rotate(inputs_permuted_translated, angles)
@@ -28,7 +28,7 @@ class DataAugmenter(nn.Module):
 
     def forward(self, x):
         if self.training:
-            angles = ((15 * (2 * ch.rand(x.shape[0]) - 1)) * np.pi / 180).to(x.get_device())
+            angles = ((15 * (2 * ch.rand(x.shape[0]) - 1))).to(x.get_device())
             shifts = (4 * (2 * ch.rand(x.shape[0], 2) - 1)).to(x.get_device())
             inputs_shifted = kornia.translate(x, shifts)
             inputs_shifted_rotated = kornia.rotate(inputs_shifted, angles)
@@ -184,15 +184,14 @@ class Model_Tanh_Ensemble(nn.Module):
         return ch.stack(outputs).permute(1, 0, 2)
 
 def predict(model, x):
-    with ch.no_grad():
-        outputs = model(x)
-        # Reshuffle outputs back to actual shape
-        outputs = outputs.permute(1, 0, 2)
-        # Run activation function on activations
-        outputs = ch.tanh(outputs)
-        outputs = [o for o in outputs]
-        outputs = ch.cat(outputs, dim=-1)
-        outputs = ch.mm(outputs, ch.t(model.module.M))
-        # Log-ReLU
-        logits = ch.log(relu(outputs) + 1e-6)
-        return logits
+    outputs = model(x)
+    # Reshuffle outputs back to actual shape
+    outputs = outputs.permute(1, 0, 2)
+    # Run activation function on activations
+    outputs = ch.tanh(outputs)
+    outputs = [o for o in outputs]
+    outputs = ch.cat(outputs, dim=-1)
+    outputs = ch.mm(outputs, ch.t(model.module.M))
+    # Log-ReLU
+    logits = ch.log(relu(outputs) + 1e-6)
+    return logits
